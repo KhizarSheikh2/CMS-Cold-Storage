@@ -31,6 +31,7 @@
 #define C_BLUE    0x001F
 #define C_ORANGE  0xFD20
 #define C_TEAL    0x0410
+#define C_CYAN      0x07FF
 
 // ── Data ─────────────────────────────────────────────────────────
 extern float temperature;       // DS18B20 reading °C
