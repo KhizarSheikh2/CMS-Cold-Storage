@@ -12,8 +12,8 @@
 #define TFT_SCLK 18
 
 // ── Display ───────────────────────────────────────────────────────
-#define TFT_WIDTH  240
-#define TFT_HEIGHT 320
+#define TFT_WIDTH  320
+#define TFT_HEIGHT 240
 
 // ── Sensor read intervals ─────────────────────────────────────────
 #define TEMP_INTERVAL    5000   // ms between DS18B20 reads

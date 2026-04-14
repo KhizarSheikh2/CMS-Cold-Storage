@@ -165,8 +165,7 @@ void refreshBoxes() {
 
   // ── Temperature ───────────────────────────────────────────────
   // Value area: below stripe, 4px padding each side
-  tft.fillRect(BOX1_X + 4, BOX1_Y + STRIPE_H + 1,
-               BOX1_W - 8, BOX1_H - STRIPE_H - 5, C_WHITE);
+  tft.fillRect(BOX1_X + 4, BOX1_Y + STRIPE_H + 1, BOX1_W - 8, BOX1_H - STRIPE_H - 5, C_WHITE);
 
   char tVal[8];
   dtostrf(temperature, 4, 1, tVal);
