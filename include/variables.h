@@ -1,6 +1,15 @@
 #pragma once
 #include <Arduino.h>
 
+// ── Global data ───────────────────────────────────────────────────
+float         temperature = 0.0f;
+float         humidity    = 0.0f;
+unsigned long startTime   = 0;
+
+// ── Screen dimensions (landscape) ────────────────────────────────
+#define SCREEN_W 320
+#define SCREEN_H 240
+
 // ── Pins ──────────────────────────────────────────────────────────
 #define ONE_WIRE_BUS 16    // DS18B20 data pin
 #define DHT_PIN      17    // DHT11 data pin
@@ -37,3 +46,8 @@
 extern float temperature;       // DS18B20 reading °C
 extern float humidity;          // DHT11 reading %
 extern unsigned long startTime; // millis() at boot, for working hours
+
+// ── Timers ────────────────────────────────────────────────────────
+unsigned long lastTempRead      = 0;
+unsigned long lastDHTRead       = 0;
+unsigned long lastDisplayUpdate = 0;

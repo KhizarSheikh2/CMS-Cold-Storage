@@ -9,15 +9,6 @@
 #include "variables.h"
 #include "logo_full.h"
 
-// ── Global data ───────────────────────────────────────────────────
-float         temperature = 0.0f;
-float         humidity    = 0.0f;
-unsigned long startTime   = 0;
-
-// ── Screen dimensions (landscape) ────────────────────────────────
-#define SCREEN_W 320
-#define SCREEN_H 240
-
 // ── Sensor objects ────────────────────────────────────────────────
 OneWire           oneWire(ONE_WIRE_BUS);
 DallasTemperature ds18b20(&oneWire);
@@ -25,11 +16,6 @@ DHT               dht(DHT_PIN, DHT11);
 
 // ── Display ───────────────────────────────────────────────────────
 Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_RST);
-
-// ── Timers ────────────────────────────────────────────────────────
-unsigned long lastTempRead      = 0;
-unsigned long lastDHTRead       = 0;
-unsigned long lastDisplayUpdate = 0;
 
 // ── Forward declarations ──────────────────────────────────────────
 void showSplash();
