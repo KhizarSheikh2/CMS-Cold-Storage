@@ -6,51 +6,28 @@
 #include <DallasTemperature.h>
 #include <DHT.h>
 
+#include "pins.h"
 #include "variables.h"
 #include "logo_full.h"
 
-// ── Sensor objects ────────────────────────────────────────────────
-OneWire           oneWire(ONE_WIRE_BUS);
-DallasTemperature ds18b20(&oneWire);
-DHT               dht(DHT_PIN, DHT11);
+// ── Global data ───────────────────────────────────────────────────
+float         temperature = 0.0f;
+float         humidity    = 0.0f;
+bool          tempError   = false;
+bool          humidError  = false;
+unsigned long startTime   = 0;
 
-// ── Display ───────────────────────────────────────────────────────
-Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_RST);
+// ── Screen dimensions (landscape) ────────────────────────────────
+#define SCREEN_W 320
+#define SCREEN_H 240
 
-// ── Forward declarations ──────────────────────────────────────────
-void showSplash();
-void showMainScreen();
-void refreshBoxes();
-void drawBox(int x, int y, int w, int h, const char* title, uint16_t accentColor);
-void centeredText(const char* txt, uint8_t size, uint16_t color, int refX, int refW, int y);
-
-// ═════════════════════════════════════════════════════════════════
-//  Layout constants
-//
-//  Header:  h=36  (size-2 text fits, ~16px tall + padding)
-//  Accent:  h=3
-//  Gap:     4px below accent line
-//
-//  Stripe:  STRIPE_H=34  (size-3 text = 24px tall, +5 top +5 bot)
-//  Value:   size-4 text = 32px tall
-//
-//  Top boxes (x2 side by side):
-//    y = 43, h = 86
-//    w = 148 each, gap = 16 between, 8 margin each side
-//
-//  Bottom box (full width):
-//    y = 137, h = 90
-//    w = 304, x = 8
-//
-//  Total used: 43 + 86 + 8 + 90 = 227 ≤ 240 ✓
-// ═════════════════════════════════════════════════════════════════
-
+// ── Layout constants ──────────────────────────────────────────────
 #define HEADER_H  36
 #define ACCENT_H   3
-#define STRIPE_H  34    // tall enough for size-3 title text
+#define STRIPE_H  34
 
 #define BOX1_X    8
-#define BOX1_Y    (HEADER_H + ACCENT_H + 4)   // 43
+#define BOX1_Y    (HEADER_H + ACCENT_H + 4)
 #define BOX1_W    148
 #define BOX1_H    86
 
@@ -60,51 +37,127 @@ void centeredText(const char* txt, uint8_t size, uint16_t color, int refX, int r
 #define BOX2_H    BOX1_H
 
 #define BOX3_X    8
-#define BOX3_Y    (BOX1_Y + BOX1_H + 8)       // 137
+#define BOX3_Y    (BOX1_Y + BOX1_H + 8)
 #define BOX3_W    304
 #define BOX3_H    90
 
+// ── Sensor objects ────────────────────────────────────────────────
+OneWire           oneWire(ONE_WIRE_BUS);
+DallasTemperature ds18b20(&oneWire);
+DHT               dht(DHT_PIN, DHT11);
+
+// ── Display ───────────────────────────────────────────────────────
+Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_RST);
+
+// ── Timers ────────────────────────────────────────────────────────
+unsigned long lastTempRead      = 0;
+unsigned long lastDHTRead       = 0;
+unsigned long lastDisplayUpdate = 0;
+
+// ── Forward declarations ──────────────────────────────────────────
+void showSplash();
+void showMainScreen();
+void refreshBoxes();
+void drawBox(int x, int y, int w, int h, const char* title, uint16_t accentColor);
+void centeredText(const char* txt, uint8_t size, uint16_t color, int refX, int refW, int y);
+
+// ═════════════════════════════════════════════════════════════════
+//  SETUP
+// ═════════════════════════════════════════════════════════════════
 void setup() {
   Serial.begin(115200);
+  delay(500);  // let serial settle
+  Serial.println("=== BOOT ===");
 
+  // ── Display init ──────────────────────────────────────────────
   SPI.begin(TFT_SCLK, -1, TFT_MOSI, TFT_CS);
   tft.begin();
   tft.setRotation(1);
   tft.fillScreen(C_WHITE);
 
+  // ── Show splash immediately — sensor warmup hides behind it ───
+  showSplash();
+
+  // ── DS18B20 init ──────────────────────────────────────────────
   ds18b20.begin();
+  ds18b20.setResolution(12);
+  ds18b20.setWaitForConversion(true);  // blocking — waits 750ms per read
+
+  // ── DHT11 init — needs 2s minimum before first valid read ─────
   dht.begin();
 
-  startTime = millis();
+  // ── Wait for sensors to stabilise (hidden behind splash) ──────
+  delay(2500);
 
+  // ── First DS18B20 read ────────────────────────────────────────
   ds18b20.requestTemperatures();
   float t = ds18b20.getTempCByIndex(0);
-  if (t != DEVICE_DISCONNECTED_C) temperature = t;
+  Serial.print("[DS18B20] Raw: "); Serial.println(t);
 
+  if (t == DEVICE_DISCONNECTED_C || t == -127.0f || t == 85.0f) {
+    tempError = true;
+    Serial.println("[DS18B20] ERROR — check wiring & 4.7k pull-up on GPIO25");
+  } else {
+    temperature = t;
+    tempError   = false;
+    Serial.print("[DS18B20] OK: "); Serial.println(temperature);
+  }
+
+  // ── First DHT11 read ──────────────────────────────────────────
   float h = dht.readHumidity();
-  humidity = isnan(h) ? 0.0f : h;
+  Serial.print("[DHT11] Raw: "); Serial.println(h);
 
-  showSplash();
-  delay(2000);
+  if (isnan(h) || h <= 0.0f || h > 100.0f) {
+    humidError = true;
+    Serial.println("[DHT11] ERROR — check wiring & GPIO26");
+  } else {
+    humidity   = h;
+    humidError = false;
+    Serial.print("[DHT11] OK: "); Serial.println(humidity);
+  }
+
+  startTime = millis();
   showMainScreen();
 }
 
+// ═════════════════════════════════════════════════════════════════
+//  LOOP
+// ═════════════════════════════════════════════════════════════════
 void loop() {
   unsigned long now = millis();
 
+  // ── DS18B20 read every 5s ─────────────────────────────────────
   if (now - lastTempRead >= TEMP_INTERVAL) {
     lastTempRead = now;
-    ds18b20.requestTemperatures();
+    ds18b20.requestTemperatures();          // blocking — 750ms wait built in
     float t = ds18b20.getTempCByIndex(0);
-    if (t != DEVICE_DISCONNECTED_C) temperature = t;
+
+    if (t == DEVICE_DISCONNECTED_C || t == -127.0f || t == 85.0f) {
+      tempError = true;
+      Serial.println("[DS18B20] ERROR");
+    } else {
+      temperature = t;
+      tempError   = false;
+      Serial.print("[DS18B20] "); Serial.println(temperature);
+    }
   }
 
+  // ── DHT11 read every 5s ───────────────────────────────────────
   if (now - lastDHTRead >= DHT_INTERVAL) {
     lastDHTRead = now;
     float h = dht.readHumidity();
-    if (!isnan(h)) humidity = h;
+
+    if (isnan(h) || h <= 0.0f || h > 100.0f) {
+      humidError = true;
+      Serial.println("[DHT11] ERROR");
+    } else {
+      humidity   = h;
+      humidError = false;
+      Serial.print("[DHT11] "); Serial.println(humidity);
+    }
   }
 
+  // ── Refresh display every 1s ──────────────────────────────────
   if (now - lastDisplayUpdate >= DISPLAY_INTERVAL) {
     lastDisplayUpdate = now;
     refreshBoxes();
@@ -127,85 +180,91 @@ void showSplash() {
 void showMainScreen() {
   tft.fillScreen(C_WHITE);
 
-  // ── Header ────────────────────────────────────────────────────
   tft.fillRect(0, 0, SCREEN_W, HEADER_H, C_TEAL);
   tft.fillRect(0, HEADER_H, SCREEN_W, ACCENT_H, C_NAVY);
+  centeredText("COLD STORAGE MONITOR", 2, C_WHITE, 0, SCREEN_W, (HEADER_H - 16) / 2);
 
-  // size-2 header text (16px tall), centred vertically in 36px bar
-  centeredText("COLD STORAGE MONITOR", 2, C_WHITE, 0, SCREEN_W, (HEADER_H - 16) / 2);   // y = 10
-
-  // ── Card frames ───────────────────────────────────────────────
-  drawBox(BOX1_X, BOX1_Y, BOX1_W, BOX1_H, "TEMPERATURE", C_NAVY);
-  drawBox(BOX2_X, BOX2_Y, BOX2_W, BOX2_H, "HUMIDITY",    C_NAVY);
+  drawBox(BOX1_X, BOX1_Y, BOX1_W, BOX1_H, "TEMPERATURE",  C_NAVY);
+  drawBox(BOX2_X, BOX2_Y, BOX2_W, BOX2_H, "HUMIDITY",     C_NAVY);
   drawBox(BOX3_X, BOX3_Y, BOX3_W, BOX3_H, "RUNNING HOURS", C_RED);
 
   refreshBoxes();
 }
 
 // ═════════════════════════════════════════════════════════════════
-//  REFRESH — value areas only
+//  REFRESH — redraws value areas only
 // ═════════════════════════════════════════════════════════════════
 void refreshBoxes() {
-  int16_t x1, y1;
+  int16_t  x1, y1;
   uint16_t nw, nh, uw, uh;
+  int      valueAreaH = BOX1_H - STRIPE_H;
 
   // ── Temperature ───────────────────────────────────────────────
-  // Value area: below stripe, 4px padding each side
-  tft.fillRect(BOX1_X + 4, BOX1_Y + STRIPE_H + 1, BOX1_W - 8, BOX1_H - STRIPE_H - 5, C_WHITE);
+  tft.fillRect(BOX1_X + 4, BOX1_Y + STRIPE_H + 1,
+               BOX1_W - 8, BOX1_H - STRIPE_H - 5, C_WHITE);
 
-  char tVal[8];
-  dtostrf(temperature, 4, 1, tVal);
+  if (tempError) {
+    centeredText("888", 4, C_RED, BOX1_X, BOX1_W,
+                 BOX1_Y + STRIPE_H + (valueAreaH - 32) / 2 - 2);
+  } else {
+    char tVal[8];
+    dtostrf(temperature, 4, 1, tVal);
 
-  // Measure size-4 number + size-2 unit
-  tft.setTextSize(4);
-  tft.getTextBounds(tVal, 0, 0, &x1, &y1, &nw, &nh);   // nh ≈ 32
-  tft.setTextSize(2);
-  tft.getTextBounds("\xF7""C", 0, 0, &x1, &y1, &uw, &uh);
+    tft.setTextSize(4);
+    tft.getTextBounds(tVal, 0, 0, &x1, &y1, &nw, &nh);
+    tft.setTextSize(3);
+    tft.getTextBounds("\xF7""C", 0, 0, &x1, &y1, &uw, &uh);
 
-  int valueAreaH = BOX1_H - STRIPE_H;                   // px available
-  int valY       = BOX1_Y + STRIPE_H + (valueAreaH - (int)nh) / 2 - 2;
-  int totalW     = (int)nw + 3 + (int)uw;
-  int startX     = BOX1_X + (BOX1_W - totalW) / 2;
+    int totalW = (int)nw + 3 + (int)uw;
+    int startX = BOX1_X + (BOX1_W - totalW) / 2;
+    int valY   = BOX1_Y + STRIPE_H + (valueAreaH - (int)nh) / 2 - 2;
 
-  tft.setTextSize(4);
-  tft.setTextColor(C_NAVY);
-  tft.setCursor(startX, valY);
-  tft.print(tVal);
+    tft.setTextSize(4);
+    tft.setTextColor(C_NAVY);
+    tft.setCursor(startX, valY);
+    tft.print(tVal);
 
-  // Unit slightly raised to top-align with number
-  tft.setTextSize(3);
-  tft.setTextColor(C_NAVY);
-  tft.setCursor(startX + (int)nw + 2, valY + 4);
-  tft.print("\xF7""C");
+    tft.setTextSize(3);
+    tft.setTextColor(C_TEAL);
+    tft.setCursor(startX + (int)nw + 3, valY + 4);
+    tft.print("\xF7""C");
+  }
 
   // ── Humidity ──────────────────────────────────────────────────
-  tft.fillRect(BOX2_X + 4, BOX2_Y + STRIPE_H + 1, BOX2_W - 8, BOX2_H - STRIPE_H - 5, C_WHITE);
+  tft.fillRect(BOX2_X + 4, BOX2_Y + STRIPE_H + 1,
+               BOX2_W - 8, BOX2_H - STRIPE_H - 5, C_WHITE);
 
-  int humInt = (int)round(humidity);
-  char hVal[8];
-  snprintf(hVal, sizeof(hVal), "%d", humInt);
+  if (humidError) {
+    centeredText("888", 4, C_RED, BOX2_X, BOX2_W,
+                 BOX2_Y + STRIPE_H + (valueAreaH - 32) / 2 - 2);
+  } else {
+    int  humInt = (int)round(humidity);
+    char hVal[8];
+    snprintf(hVal, sizeof(hVal), "%d", humInt);
 
-  tft.setTextSize(4);
-  tft.getTextBounds(hVal, 0, 0, &x1, &y1, &nw, &nh);
-  tft.setTextSize(2);
-  tft.getTextBounds("%", 0, 0, &x1, &y1, &uw, &uh);
+    tft.setTextSize(4);
+    tft.getTextBounds(hVal, 0, 0, &x1, &y1, &nw, &nh);
+    tft.setTextSize(3);
+    tft.getTextBounds("%", 0, 0, &x1, &y1, &uw, &uh);
 
-  valY   = BOX2_Y + STRIPE_H + (valueAreaH - (int)nh) / 2 - 2;
-  totalW = (int)nw + 3 + (int)uw;
-  startX = BOX2_X + (BOX2_W - totalW) / 2;
+    int totalW = (int)nw + 3 + (int)uw;
+    int startX = BOX2_X + (BOX2_W - totalW) / 2;
+    int valY   = BOX2_Y + STRIPE_H + (valueAreaH - (int)nh) / 2 - 2;
 
-  tft.setTextSize(4);
-  tft.setTextColor(C_NAVY);
-  tft.setCursor(startX, valY);
-  tft.print(hVal);
+    tft.setTextSize(4);
+    tft.setTextColor(C_NAVY);
+    tft.setCursor(startX, valY);
+    tft.print(hVal);
 
-  tft.setTextSize(3);
-  tft.setTextColor(C_NAVY);
-  tft.setCursor(startX + (int)nw + 3, valY + 4);
-  tft.print("%");
+    tft.setTextSize(3);
+    tft.setTextColor(C_TEAL);
+    tft.setCursor(startX + (int)nw + 3, valY + 4);
+    tft.print("%");
+  }
 
-  // ── Working Hours ─────────────────────────────────────────────
-  tft.fillRect(BOX3_X + 4, BOX3_Y + STRIPE_H + 1, BOX3_W - 8, BOX3_H - STRIPE_H - 5, C_WHITE);
+  // ── Running Hours ─────────────────────────────────────────────
+  tft.fillRect(BOX3_X + 4, BOX3_Y + STRIPE_H + 1,
+               BOX3_W - 8, BOX3_H - STRIPE_H - 5, C_WHITE);
 
   unsigned long elapsed = (millis() - startTime) / 1000UL;
   unsigned long hh = elapsed / 3600;
@@ -214,11 +273,10 @@ void refreshBoxes() {
   char timeStr[16];
   snprintf(timeStr, sizeof(timeStr), "%02lu:%02lu:%02lu", hh, mm, ss);
 
-  tft.setTextSize(4);
-  tft.getTextBounds(timeStr, 0, 0, &x1, &y1, &nw, &nh);   // nh ≈ 32
-
   int box3ValueH = BOX3_H - STRIPE_H;
-  int timeY      = BOX3_Y + STRIPE_H + (box3ValueH - (int)nh) / 2 - 2;
+  tft.setTextSize(4);
+  tft.getTextBounds(timeStr, 0, 0, &x1, &y1, &nw, &nh);
+  int timeY = BOX3_Y + STRIPE_H + (box3ValueH - (int)nh) / 2 - 2;
 
   tft.setTextColor(C_RED);
   tft.setCursor(BOX3_X + (BOX3_W - (int)nw) / 2, timeY);
@@ -228,24 +286,21 @@ void refreshBoxes() {
 // ═════════════════════════════════════════════════════════════════
 //  DRAW BOX
 // ═════════════════════════════════════════════════════════════════
-void drawBox(int x, int y, int w, int h, const char* title, uint16_t accentColor) {
-  // Shadow
+void drawBox(int x, int y, int w, int h,
+             const char* title, uint16_t accentColor) {
   tft.fillRoundRect(x + 2, y + 2, w, h, 6, C_LTGRAY);
-  // Body
   tft.fillRoundRect(x, y, w, h, 6, C_WHITE);
   tft.drawRoundRect(x, y, w, h, 6, C_LTGRAY);
 
-  // Title stripe — STRIPE_H=34 fits size-3 text (24px) with 5px padding
   tft.fillRoundRect(x, y, w, STRIPE_H, 6, accentColor);
-  tft.fillRect(x, y + 16, w, STRIPE_H - 16, accentColor);  // square off bottom
+  tft.fillRect(x, y + 16, w, STRIPE_H - 16, accentColor);
 
-  // Size-3 title, vertically centred in stripe
-  // size-3 char height ≈ 24px → top padding = (34-24)/2 = 5
   centeredText(title, 2, C_WHITE, x, w, y + (STRIPE_H - 16) / 2);
 }
 
 // ── Utility ───────────────────────────────────────────────────────
-void centeredText(const char* txt, uint8_t size, uint16_t color, int refX, int refW, int y) {
+void centeredText(const char* txt, uint8_t size, uint16_t color,
+                  int refX, int refW, int y) {
   tft.setTextSize(size);
   tft.setTextColor(color);
   int16_t x1, y1; uint16_t tw, th;
